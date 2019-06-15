@@ -78,7 +78,7 @@ class DistributedOptimizerTest(unittest.TestCase):
 
     def test_attn_score_perf(self):
         # MLPerf GNMT has 160671297 parameters
-        iters = 10
+        iters = 1000
         sizes = [[4096, 1024], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [32320, 1024], [4096, 1024], [4096, 1024], [4096], [4096], [1024], [1], [1024], [1024, 1024], [1024, 1024], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [32320, 1024], [32320]]
         adam_option = {'lr':5e-4, 'betas':(0.9, 0.999), 'eps':1e-08,
             'weight_decay':0, 'amsgrad':False}
@@ -87,6 +87,11 @@ class DistributedOptimizerTest(unittest.TestCase):
         ref_param, tst_param, ref_optim, tst_optim = \
             self.gen_test_inputs(sizes, adam_option, adam_option)
         ref_grads, tst_grads = self.gen_mixed_grad(tst_param)
+
+        # Warm up
+        torch.distributed.all_reduce(ref_grads[0], async_op=False)
+        ref_optim.step(grads=ref_grads, scale=scale)
+        tst_optim.step(grads=ref_grads, scale=scale)
 
         self.barrier()
         ts = time.time()
@@ -103,7 +108,7 @@ class DistributedOptimizerTest(unittest.TestCase):
             tst_optim.step(grads=ref_grads, scale=scale)
         td = time.time()
         print("{}:{} Opt time {:.2f} s elapsed for {} iterations, norm {:.4f}".format(
-            self.world_size, self.rank, td - ts, iters, ref_param[0].norm()))
+            self.world_size, self.rank, td - ts, iters, tst_param[0].norm()))
 
 if __name__ == '__main__':
     #script_path = os.path.dirname(os.path.realpath(__file__))
