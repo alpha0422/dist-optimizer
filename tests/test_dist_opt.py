@@ -57,10 +57,13 @@ class DistributedOptimizerTest(unittest.TestCase):
 
         return (ref_param, tst_param, ref_optim, tst_optim)
 
-    def gen_mixed_grad(self, tst_param, scale=1.0):
+    def gen_mixed_grad(self, tst_param, scale=1.0, random=True):
         tst_grads = []
         for p_tst in tst_param:
-            grad = torch.rand_like(p_tst).half()
+            if random:
+                grad = torch.randn_like(p_tst).half()
+            else:
+                grad = torch.zeros_like(p_tst).half()
             tst_grads.append(grad)
             p_tst.grad = grad
         ref_grads = [torch.cat([g.view(-1) for g in tst_grads])]
@@ -73,10 +76,10 @@ class DistributedOptimizerTest(unittest.TestCase):
         print("Max diff: idx: {}, diff: {:.6f}, ref: {:.6f}, tst: {:.6f}".format(
             idx, diff, ref[idx], tst[idx]))
 
-    def test_attn_score_function(self):
+    def test_dist_opt_function(self):
         pass
 
-    def test_attn_score_perf(self):
+    def test_dist_opt_perf(self):
         # MLPerf GNMT has 160671297 parameters
         iters = 1000
         sizes = [[4096, 1024], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [32320, 1024], [4096, 1024], [4096, 1024], [4096], [4096], [1024], [1], [1024], [1024, 1024], [1024, 1024], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [32320, 1024], [32320]]
@@ -86,7 +89,7 @@ class DistributedOptimizerTest(unittest.TestCase):
 
         ref_param, tst_param, ref_optim, tst_optim = \
             self.gen_test_inputs(sizes, adam_option, adam_option)
-        ref_grads, tst_grads = self.gen_mixed_grad(tst_param)
+        ref_grads, tst_grads = self.gen_mixed_grad(tst_param, random=False)
 
         # Warm up
         torch.distributed.all_reduce(ref_grads[0], async_op=False)
@@ -98,6 +101,7 @@ class DistributedOptimizerTest(unittest.TestCase):
         for i in range(iters):
             torch.distributed.all_reduce(ref_grads[0], async_op=False)
             ref_optim.step(grads=ref_grads, scale=scale)
+        self.barrier()
         td = time.time()
         print("{}:{} Ref time {:.2f} s elapsed for {} iterations, norm {:.4f}".format(
             self.world_size, self.rank, td - ts, iters, ref_param[0].norm()))
@@ -106,6 +110,7 @@ class DistributedOptimizerTest(unittest.TestCase):
         ts = time.time()
         for i in range(iters):
             tst_optim.step(grads=ref_grads, scale=scale)
+        self.barrier()
         td = time.time()
         print("{}:{} Opt time {:.2f} s elapsed for {} iterations, norm {:.4f}".format(
             self.world_size, self.rank, td - ts, iters, tst_param[0].norm()))
@@ -116,5 +121,5 @@ if __name__ == '__main__':
 
     test = DistributedOptimizerTest()
     test.setUp()
-    test.test_attn_score_perf()
+    test.test_dist_opt_perf()
 
