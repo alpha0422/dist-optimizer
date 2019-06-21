@@ -223,6 +223,10 @@ class DistributedOptimizer(torch.optim.Optimizer):
             clip_coef = self.grad_clip / (total_norm + 1e-6)
             clip_coef = min(clip_coef, 1)
 
+        # Skill step if norm is illegal
+        if not math.isfinite(total_norm):
+            return False
+
         # Step optimizer with scale
         args['scale'] /= clip_coef
         args['grads'] = [self.fp16_grads_list[self.rank]]
@@ -234,4 +238,6 @@ class DistributedOptimizer(torch.optim.Optimizer):
         # same storage, all_gather is the last step here
         torch.distributed.all_gather(self.fp16_params_list,
             self.fp16_params_list[self.rank], async_op=False)
+
+        return True
 
