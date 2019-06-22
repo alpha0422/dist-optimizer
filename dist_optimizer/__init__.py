@@ -1,1 +1,1 @@
-from .dist_opt import DistributedOptimizer
+from .dist_opt import FullyDistributedOptimizer
