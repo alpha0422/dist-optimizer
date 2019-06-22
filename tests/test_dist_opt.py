@@ -19,7 +19,7 @@ def parse_args():
     args, unknownargs = parser.parse_known_args()
     return args
 
-class DistributedOptimizerTest(unittest.TestCase):
+class FullyDistributedOptimizerTest(unittest.TestCase):
     def setUp(self):
         torch.cuda.manual_seed(1234)
         args = parse_args()
@@ -38,7 +38,8 @@ class DistributedOptimizerTest(unittest.TestCase):
             torch.distributed.all_reduce(torch.cuda.FloatTensor(1))
             torch.cuda.synchronize()
 
-    def gen_test_inputs(self, sizes, ref_optim_option, tst_optim_option, random=True):
+    def gen_test_inputs(self, sizes, ref_optim_class, tst_optim_class,
+        ref_optim_option, tst_optim_option, random=True):
         tensors = []
         for size in sizes:
             if random:
@@ -54,9 +55,9 @@ class DistributedOptimizerTest(unittest.TestCase):
         with torch.no_grad():
             ref_param = [torch.cat([p.view(-1) for p in ref_param])]
 
-        ref_optim = apex.optimizers.FusedAdam(ref_param, **ref_optim_option)
-        tst_optim = dist_optimizer.DistributedOptimizer(tst_param,
-            apex.optimizers.FusedAdam, grad_clip=5.0, align=64, **tst_optim_option)
+        ref_optim = ref_optim_class(ref_param, **ref_optim_option)
+        tst_optim = tst_optim_class(tst_param, apex.optimizers.FusedAdam,
+            grad_clip=5.0, align=64, **tst_optim_option)
 
         return (ref_param, tst_param, ref_optim, tst_optim)
 
@@ -104,7 +105,7 @@ class DistributedOptimizerTest(unittest.TestCase):
         tot_norm = tot_norm ** (1. / norm_type)
         return tot_norm
 
-    def test_dist_opt_function(self):
+    def test_fully_distributed_optimizer_function(self):
         iters = 4
         sizes = [[4096, 1024], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [32320, 1024], [4096, 1024], [4096, 1024], [4096], [4096], [1024], [1], [1024], [1024, 1024], [1024, 1024], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [32320, 1024], [32320]]
         adam_option = {'lr':1e-2, 'betas':(0.9, 0.999), 'eps':1e-08,
@@ -112,7 +113,9 @@ class DistributedOptimizerTest(unittest.TestCase):
         scale = 4.0
 
         ref_param, tst_param, ref_optim, tst_optim = \
-            self.gen_test_inputs(sizes, adam_option, adam_option, random=True)
+            self.gen_test_inputs(sizes, apex.optimizers.FusedAdam,
+            dist_optimizer.FullyDistributedOptimizer,
+            adam_option, adam_option, random=True)
 
         for i in range(iters):
             ref_grads, tst_grads = self.gen_mixed_grad(tst_param, random=True)
@@ -132,7 +135,8 @@ class DistributedOptimizerTest(unittest.TestCase):
         scale = 4.0
 
         ref_param, tst_param, ref_optim, tst_optim = \
-            self.gen_test_inputs(sizes, adam_option, adam_option)
+            self.gen_test_inputs(sizes, apex.optimizers.FusedAdam,
+            dist_optimizer.FullyDistributedOptimizer, adam_option, adam_option)
         ref_grads, tst_grads = self.gen_mixed_grad(tst_param, random=False)
 
         # Warm up
@@ -160,8 +164,8 @@ class DistributedOptimizerTest(unittest.TestCase):
             self.world_size, self.rank, td - ts, iters, self.norm(tst_param)))
 
 if __name__ == '__main__':
-    test = DistributedOptimizerTest()
+    test = FullyDistributedOptimizerTest()
     test.setUp()
-    test.test_dist_opt_function()
+    test.test_fully_distributed_optimizer_function()
     test.test_dist_opt_perf()
 
