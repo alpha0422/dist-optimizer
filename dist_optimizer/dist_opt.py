@@ -137,7 +137,8 @@ class DistributedOptimizer(torch.optim.Optimizer):
                 size = min(fp16_params[params_start_idx].numel() - param_offset, rank_nelem)
                 self.fp32_params[fp32_pointer:fp32_pointer+size].copy_(
                     fp16_params[params_start_idx].view(-1)[param_offset:param_offset+size])
-                nelem = (size + align - 1) // align * align
+                nelem = (fp16_params[params_start_idx].numel() + align - 1) \
+                    // align * align - param_offset
                 fp32_pointer += nelem
             else:
                 size = fp16_params[params_start_idx].numel()
