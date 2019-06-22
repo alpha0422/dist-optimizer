@@ -1,1 +1,2 @@
-from .dist_opt import FullyDistributedOptimizer
+from .dist_opt import FullyDistributedOptimizer, \
+    HierarchicalDistributedOptimizer
