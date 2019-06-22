@@ -8,8 +8,8 @@ class DistributedOptimizer(torch.optim.Optimizer):
     Distributed optimizer with mixed precision for PyTorch.
     """
     def __init__(self, params, optimizer, grad_clip=None, align=64, **args):
-        # Assume params comes from model.parameters(), and params.grad will
-        # be used for optimizer.step()
+        # Assume params comes from model.half().parameters(), and params.grad
+        # will be used for optimizer.step()
         assert torch.distributed.is_initialized(), \
             "Default process group hasn't been initialized."
         assert grad_clip is None or isinstance(grad_clip, float) or \
@@ -38,9 +38,8 @@ class DistributedOptimizer(torch.optim.Optimizer):
         # Create per rank local FP32 master parameters and initialize
         self.fp32_params = torch.zeros(self.rank_nelem, dtype=torch.float,
             device='cuda')
-        with torch.no_grad():
-            self.initialize_fp32_params(params, self.params_start_idx,
-                self.param_offset, self.align, self.rank_nelem)
+        self.initialize_fp32_params(params, self.params_start_idx,
+            self.param_offset, self.align, self.rank_nelem)
 
         # Create FP16 gradient buffer for reduce-scatter
         self.fp16_grads_list = self.build_reduce_scatter_grads_(self.fp16_grads,
@@ -81,16 +80,23 @@ class DistributedOptimizer(torch.optim.Optimizer):
         flat_grad = params[0].new_zeros(tot_nelem)
         flat_param.grad = flat_grad
     
-        # Copy model's parameters to flattened parameters
-        pointer = 0
-        for p in params:
-            flat_param[pointer:pointer+p.numel()].copy_(p.data.view(-1))
-            nelem = (p.numel() + align - 1) // align * align
-            pointer += nelem
-    
-        # Reset model's parameters/gradients to flattened parameters/gradients
-        pointer = 0
         with torch.no_grad():
+            # Copy model's parameters to flattened parameters
+            pointer = 0
+            for p in params:
+                flat_param[pointer:pointer+p.numel()].copy_(p.data.view(-1))
+                nelem = (p.numel() + align - 1) // align * align
+                pointer += nelem
+    
+            # Copy model's parameters to flattened parameters
+            pointer = 0
+            for p in params:
+                flat_param[pointer:pointer+p.numel()].copy_(p.data.view(-1))
+                nelem = (p.numel() + align - 1) // align * align
+                pointer += nelem
+    
+            # Reset model's parameters/gradients to flattened parameters/gradients
+            pointer = 0
             for p in params:
                 p.set_(source=flat_param.storage(), storage_offset=pointer,
                     size=p.size())
@@ -125,33 +131,34 @@ class DistributedOptimizer(torch.optim.Optimizer):
         fp16_params = params
         fp32_pointer = 0
 
-        # Special process with first parameter as it may locate in the middle
-        if param_offset < fp16_params[params_start_idx].numel():
-            size = min(fp16_params[params_start_idx].numel() - param_offset, rank_nelem)
-            self.fp32_params[fp32_pointer:fp32_pointer+size].copy_(
-                fp16_params[params_start_idx].view(-1)[param_offset:param_offset+size])
-            nelem = (size + align - 1) // align * align
-            fp32_pointer += nelem
-        else:
-            size = fp16_params[params_start_idx].numel()
-            nelem = (size + align - 1) // align * align - param_offset
-            assert nelem > 0, "Expect the position locates in the padding."
-            fp32_pointer += nelem
-
-        if fp32_pointer >= rank_nelem:
-            return
-
-        for p in fp16_params[params_start_idx+1:]:
-            size = min(p.numel(), rank_nelem - fp32_pointer)
-            self.fp32_params[fp32_pointer:fp32_pointer+size].copy_(
-                p.view(-1)[:size])
-            nelem = (size + align - 1) // align * align
-            fp32_pointer += nelem
+        with torch.no_grad():
+            # Special process with first parameter as it may locate in the middle
+            if param_offset < fp16_params[params_start_idx].numel():
+                size = min(fp16_params[params_start_idx].numel() - param_offset, rank_nelem)
+                self.fp32_params[fp32_pointer:fp32_pointer+size].copy_(
+                    fp16_params[params_start_idx].view(-1)[param_offset:param_offset+size])
+                nelem = (size + align - 1) // align * align
+                fp32_pointer += nelem
+            else:
+                size = fp16_params[params_start_idx].numel()
+                nelem = (size + align - 1) // align * align - param_offset
+                assert nelem > 0, "Expect the position locates in the padding."
+                fp32_pointer += nelem
 
             if fp32_pointer >= rank_nelem:
                 return
-        else:
-            raise ValueError("Expect copy of real data.")
+
+            for p in fp16_params[params_start_idx+1:]:
+                size = min(p.numel(), rank_nelem - fp32_pointer)
+                self.fp32_params[fp32_pointer:fp32_pointer+size].copy_(
+                    p.view(-1)[:size])
+                nelem = (size + align - 1) // align * align
+                fp32_pointer += nelem
+
+                if fp32_pointer >= rank_nelem:
+                    return
+            else:
+                raise ValueError("Expect copy of real data.")
 
     def flatten_fp16_grads_(self):
         # Copy the model's FP16 gradients to the flattened gradients
