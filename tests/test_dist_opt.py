@@ -38,10 +38,13 @@ class DistributedOptimizerTest(unittest.TestCase):
             torch.distributed.all_reduce(torch.cuda.FloatTensor(1))
             torch.cuda.synchronize()
 
-    def gen_test_inputs(self, sizes, ref_optim_option, tst_optim_option):
+    def gen_test_inputs(self, sizes, ref_optim_option, tst_optim_option, random=True):
         tensors = []
         for size in sizes:
-            tensors.append(torch.randn(size, dtype=torch.float, device='cuda'))
+            if random:
+                tensors.append(torch.randn(size, dtype=torch.float, device='cuda'))
+            else:
+                tensors.append(torch.zeros(size, dtype=torch.float, device='cuda'))
 
         ref_param = []
         tst_param = []
@@ -66,26 +69,67 @@ class DistributedOptimizerTest(unittest.TestCase):
                 grad = torch.zeros_like(p_tst).half()
             tst_grads.append(grad)
             p_tst.grad = grad
-        ref_grads = [torch.cat([g.view(-1) for g in tst_grads])]
+
+        with torch.no_grad():
+            ref_grads = [torch.cat([g.view(-1) for g in tst_grads])]
         return ref_grads, tst_grads
 
     def print_max_diff_elem(self, ref, tst):
+        with torch.no_grad():
+            ref = torch.cat([p.half().view(-1) for p in ref])
+            tst = torch.cat([p.half().view(-1) for p in tst])
         ref, tst = ref.flatten(), tst.flatten()
         diff = (ref - tst).abs().max()
         idx = (ref - tst).abs().argmax()
-        print("Max diff: idx: {}, diff: {:.6f}, ref: {:.6f}, tst: {:.6f}".format(
-            idx, diff, ref[idx], tst[idx]))
+        print("{}:{} Max diff: idx: {}, diff: {:.6f}, ref: {:.6f}, tst: {:.6f}".format(
+            self.world_size, self.rank, idx, diff, ref[idx], tst[idx]))
+
+    def assert_print_max_diff_elem(self, ref, tst):
+        with torch.no_grad():
+            ref = torch.cat([p.half().view(-1) for p in ref])
+            tst = torch.cat([p.half().view(-1) for p in tst])
+        ref, tst = ref.flatten(), tst.flatten()
+        diff = (ref - tst).abs().max()
+        idx = (ref - tst).abs().argmax()
+        print("{}:{} Max diff: idx: {}, diff: {:.6f}, ref: {:.6f}, tst: {:.6f}".format(
+            self.world_size, self.rank, idx, diff, ref[idx], tst[idx]))
+        self.assertTrue(torch.allclose(ref, tst, atol=1e-3, rtol=1e-2))
+
+    def norm(self, alist):
+        tot_norm = 0.0
+        norm_type = 2
+        for p in alist:
+            p_norm = p.norm(norm_type)
+            tot_norm += p_norm.item() ** norm_type
+        tot_norm = tot_norm ** (1. / norm_type)
+        return tot_norm
 
     def test_dist_opt_function(self):
-        pass
+        iters = 4
+        sizes = [[4096, 1024], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [32320, 1024], [4096, 1024], [4096, 1024], [4096], [4096], [1024], [1], [1024], [1024, 1024], [1024, 1024], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [32320, 1024], [32320]]
+        adam_option = {'lr':1e-2, 'betas':(0.9, 0.999), 'eps':1e-08,
+            'weight_decay':0, 'amsgrad':False}
+        scale = 4.0
 
+        ref_param, tst_param, ref_optim, tst_optim = \
+            self.gen_test_inputs(sizes, adam_option, adam_option, random=True)
+
+        for i in range(iters):
+            ref_grads, tst_grads = self.gen_mixed_grad(tst_param, random=True)
+
+            torch.distributed.all_reduce(ref_grads[0], async_op=False)
+            ref_optim.step(grads=ref_grads, scale=scale)
+            tst_optim.step(grads=tst_grads, scale=scale)
+
+            self.print_max_diff_elem(ref_param, tst_param)
+           
     def test_dist_opt_perf(self):
         # MLPerf GNMT has 160671297 parameters
         iters = 1000
         sizes = [[4096, 1024], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [32320, 1024], [4096, 1024], [4096, 1024], [4096], [4096], [1024], [1], [1024], [1024, 1024], [1024, 1024], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [32320, 1024], [32320]]
-        adam_option = {'lr':5e-4, 'betas':(0.9, 0.999), 'eps':1e-08,
+        adam_option = {'lr':1e-3, 'betas':(0.9, 0.999), 'eps':1e-08,
             'weight_decay':0, 'amsgrad':False}
-        scale = 4
+        scale = 4.0
 
         ref_param, tst_param, ref_optim, tst_optim = \
             self.gen_test_inputs(sizes, adam_option, adam_option)
@@ -94,7 +138,7 @@ class DistributedOptimizerTest(unittest.TestCase):
         # Warm up
         torch.distributed.all_reduce(ref_grads[0], async_op=False)
         ref_optim.step(grads=ref_grads, scale=scale)
-        tst_optim.step(grads=ref_grads, scale=scale)
+        tst_optim.step(grads=tst_grads, scale=scale)
 
         self.barrier()
         ts = time.time()
@@ -104,22 +148,20 @@ class DistributedOptimizerTest(unittest.TestCase):
         self.barrier()
         td = time.time()
         print("{}:{} Ref time {:.2f} s elapsed for {} iterations, norm {:.4f}".format(
-            self.world_size, self.rank, td - ts, iters, ref_param[0].norm()))
+            self.world_size, self.rank, td - ts, iters, self.norm(ref_param)))
 
         self.barrier()
         ts = time.time()
         for i in range(iters):
-            tst_optim.step(grads=ref_grads, scale=scale)
+            tst_optim.step(grads=tst_grads, scale=scale)
         self.barrier()
         td = time.time()
         print("{}:{} Opt time {:.2f} s elapsed for {} iterations, norm {:.4f}".format(
-            self.world_size, self.rank, td - ts, iters, tst_param[0].norm()))
+            self.world_size, self.rank, td - ts, iters, self.norm(tst_param)))
 
 if __name__ == '__main__':
-    #script_path = os.path.dirname(os.path.realpath(__file__))
-    #unittest.main()
-
     test = DistributedOptimizerTest()
     test.setUp()
+    test.test_dist_opt_function()
     test.test_dist_opt_perf()
 
