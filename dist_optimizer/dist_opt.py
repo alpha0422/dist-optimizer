@@ -370,7 +370,11 @@ class IntraNodeDistributedOptimizer(BasicDistributedOptimizer):
             torch.distributed.all_gather(self.fp16_grads_list_global[
                 self.device_rank : self.world_size : self.devices],
                 self.fp16_grads_list_global[self.rank],
-                group=self.device_pg[self.device_rank], async_op=False)
+                group=self.device_pg[self.device_rank], async_op=True)
+
+            # FIXME: we should have a barrier among node_pg[node_rank] here,
+            # but that somehow doesn't work
+            torch.distributed.barrier()
 
         # Collect gradient norm if need gradient clipping
         if self.grad_clip:
@@ -551,16 +555,20 @@ class HierarchicalDistributedOptimizer(BasicDistributedOptimizer):
 
         # Intra-node reduce-scatter fp16 gradients
         torch.distributed.reduce_scatter(self.fp16_grads_list[self.device_rank],
-            self.fp16_grads_list, group=self.node_pg[self.node_rank], async_op=False)
+            self.fp16_grads_list, group=self.node_pg[self.node_rank], async_op=True)
 
         # Inter-node all-reduce fp16 gradients
         if self.nodes > 1:
-            # FIXME: instead of making reduce_scatter sync_op, we should have a barrier
-            # among device_pg[device_rank] here, but that somehow doesn't work
+            # FIXME: we should have a barrier among device_pg[device_rank] here,
+            # but that somehow doesn't work
+            torch.distributed.barrier()
+
             torch.distributed.all_reduce(self.fp16_grads_list[self.device_rank],
-                group=self.device_pg[self.device_rank], async_op=False)
-        # FIXME: instead of making all_reduce sync_op, we should have a barrier
-        # among node_pg[node_rank] here, but that somehow doesn't work
+                group=self.device_pg[self.device_rank], async_op=True)
+
+        # FIXME: we should have a barrier among node_pg[node_rank] here,
+        # but that somehow doesn't work
+        torch.distributed.barrier()
 
         # Collect gradient norm if need gradient clipping
         if self.grad_clip:
