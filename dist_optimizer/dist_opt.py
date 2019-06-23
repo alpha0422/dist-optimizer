@@ -261,9 +261,9 @@ class FullyDistributedOptimizer(BasicDistributedOptimizer):
             clip_coef = self.grad_clip / (total_norm + 1e-6)
             clip_coef = min(clip_coef, 1)
 
-        # Skill step if norm is illegal
-        if not math.isfinite(total_norm):
-            return False
+            # Skill step if norm is illegal
+            if not math.isfinite(total_norm):
+                return False
 
         # Step optimizer with scale
         args['scale'] /= clip_coef
@@ -302,15 +302,17 @@ class HierarchicalDistributedOptimizer(BasicDistributedOptimizer):
         self.node_rank = self.rank // self.devices
 
         # Create process group for ranks with the same local rank
+        self.device_pg = []
         if self.nodes > 1:
-            self.device_pg = torch.distributed.new_group(ranks=
-                list(range(self.device_rank, self.world_size, self.devices)))
-        else:
-            self.device_pg = None
+            for  i in range(self.devices):
+                self.device_pg.append(torch.distributed.new_group(ranks=
+                    list(range(i, self.world_size, self.devices))))
+
         # Create process group for ranks within the same node
-        self.node_pg = torch.distributed.new_group(ranks=
-            list(range(self.node_rank * self.devices,
-            (self.node_rank + 1) * self.devices)))
+        self.node_pg = []
+        for i in range(self.nodes):
+            self.node_pg.append(torch.distributed.new_group(ranks=
+                list(range(i * self.devices, (i + 1) * self.devices))))
 
         # Align to LCM of (nodes, devices, CUDA performance requirement)
         self.align = abs(self.nodes * self.devices * align) // \
@@ -354,26 +356,27 @@ class HierarchicalDistributedOptimizer(BasicDistributedOptimizer):
 
         # Intra-node reduce-scatter fp16 gradients
         torch.distributed.reduce_scatter(self.fp16_grads_list[self.device_rank],
-            self.fp16_grads_list, group=self.node_pg, async_op=True)
+            self.fp16_grads_list, group=self.node_pg[self.node_rank], async_op=False)
 
         # Inter-node all-reduce fp16 gradients
         if self.nodes > 1:
-            torch.distributed.barrier(group=self.device_pg, async_op=False)
-            for i in range(self.devices):
-                torch.distributed.all_reduce(self.fp16_grads_list[i],
-                    group=self.device_pg, async_op=True)
-        torch.distributed.barrier(group=self.node_pg, async_op=False)
+            # FIXME: instead of making reduce_scatter sync_op, we should have a barrier
+            # among device_pg[device_rank] here, but that somehow doesn't work
+            torch.distributed.all_reduce(self.fp16_grads_list[self.device_rank],
+                group=self.device_pg[self.device_rank], async_op=False)
+        # FIXME: instead of making all_reduce sync_op, we should have a barrier
+        # among node_pg[node_rank] here, but that somehow doesn't work
 
         # Collect gradient norm if need gradient clipping
         if self.grad_clip:
             total_norm = self.grad_norm(self.norms, self.fp16_grads_list,
-                self.device_rank, group=self.node_pg)
+                self.device_rank, group=self.node_pg[self.node_rank])
             clip_coef = self.grad_clip / (total_norm + 1e-6)
             clip_coef = min(clip_coef, 1)
 
-        # Skill step if norm is illegal
-        if not math.isfinite(total_norm):
-            return False
+            # Skill step if norm is illegal
+            if not math.isfinite(total_norm):
+                return False
 
         # Step optimizer with scale
         args['scale'] /= clip_coef
@@ -385,7 +388,7 @@ class HierarchicalDistributedOptimizer(BasicDistributedOptimizer):
         # Since the flattened FP16 parameters and model parameters share the
         # same storage, all_gather is the last step here
         torch.distributed.all_gather(self.fp16_params_list,
-            self.fp16_params_list[self.device_rank], group=self.node_pg,
+            self.fp16_params_list[self.device_rank], group=self.node_pg[self.node_rank],
             async_op=False)
 
         return True
