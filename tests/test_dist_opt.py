@@ -172,6 +172,27 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
 
             self.print_max_diff_elem(ref_param, tst_param)
            
+    def test_two_level_distributed_optimizer_function(self):
+        iters = 4
+        sizes = self.gnmt_sizes
+        adam_option = {'lr':1e-2, 'betas':(0.9, 0.999), 'eps':1e-08,
+            'weight_decay':0, 'amsgrad':False}
+        scale = 4.0
+
+        ref_param, tst_param, ref_optim, tst_optim = \
+            self.gen_test_inputs(sizes, apex.optimizers.FusedAdam,
+            dist_optimizer.TwoLevelDistributedOptimizer,
+            adam_option, adam_option, random=True)
+
+        for i in range(iters):
+            ref_grads, tst_grads = self.gen_mixed_grad(tst_param, random=True)
+
+            torch.distributed.all_reduce(ref_grads[0], async_op=False)
+            ref_optim.step(grads=ref_grads, scale=scale)
+            tst_optim.step(grads=tst_grads, scale=scale)
+
+            self.print_max_diff_elem(ref_param, tst_param)
+           
     def test_hierarchical_distributed_optimizer_function(self):
         iters = 4
         sizes = self.gnmt_sizes
@@ -202,7 +223,7 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
 
         ref_param, tst_param, ref_optim, tst_optim = \
             self.gen_test_inputs(sizes, apex.optimizers.FusedAdam,
-            dist_optimizer.IntraNodeDistributedOptimizer,
+            dist_optimizer.TwoLevelDistributedOptimizer,
             adam_option, adam_option)
         ref_grads, tst_grads = self.gen_mixed_grad(tst_param, random=False)
 
@@ -245,6 +266,10 @@ if __name__ == '__main__':
     torch.distributed.barrier()
     print("Checking IntraNodeAcceleratedOptimizer functionality ...")
     test.test_intra_node_accelerated_optimizer_function()
+
+    torch.distributed.barrier()
+    print("Checking TwoLevelDistributedOptimizer functionality ...")
+    test.test_two_level_distributed_optimizer_function()
 
     torch.distributed.barrier()
     print("Checking HierarchicalDistributedOptimizer functionality ...")
