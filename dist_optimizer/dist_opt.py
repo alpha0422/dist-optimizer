@@ -291,16 +291,16 @@ class FullyDistributedOptimizer(BasicDistributedOptimizer):
 
         return True
 
-class IntraNodeAcceleratedDistributedOptimizer(BasicDistributedOptimizer):
+class IntraNodeAcceleratedOptimizer(BasicDistributedOptimizer):
     """
-    Intra-node accelerated distributed optimizer with mixed precision for PyTorch.
+    Intra-node accelerated optimizer with mixed precision for PyTorch.
     Distributed strategy:
     1. all-reduce gradients among all ranks;
     2. weight update with 1 / devices protion;
     3. intra-node all-gather weights;
     """
     def __init__(self, params, optimizer, grad_clip=None, align=64, **args):
-        super(IntraNodeAcceleratedDistributedOptimizer, self).__init__(params,
+        super(IntraNodeAcceleratedOptimizer, self).__init__(params,
             optimizer, grad_clip, align)
 
         # Create process group for ranks within the same node

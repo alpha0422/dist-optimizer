@@ -139,7 +139,7 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
 
         ref_param, tst_param, ref_optim, tst_optim = \
             self.gen_test_inputs(sizes, apex.optimizers.FusedAdam,
-            dist_optimizer.IntraNodeAcceleratedDistributedOptimizer,
+            dist_optimizer.IntraNodeAcceleratedOptimizer,
             adam_option, adam_option, random=True)
 
         for i in range(iters):
@@ -181,7 +181,7 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
 
         ref_param, tst_param, ref_optim, tst_optim = \
             self.gen_test_inputs(sizes, apex.optimizers.FusedAdam,
-            dist_optimizer.IntraNodeAcceleratedDistributedOptimizer,
+            dist_optimizer.IntraNodeAcceleratedOptimizer,
             adam_option, adam_option)
         ref_grads, tst_grads = self.gen_mixed_grad(tst_param, random=False)
 
@@ -218,7 +218,7 @@ if __name__ == '__main__':
     test.test_fully_distributed_optimizer_function()
 
     torch.distributed.barrier()
-    print("Checking IntraNodeAcceleratedDistributedOptimizer functionality ...")
+    print("Checking IntraNodeAcceleratedOptimizer functionality ...")
     test.test_intra_node_accelerated_distributed_optimizer_function()
 
     torch.distributed.barrier()

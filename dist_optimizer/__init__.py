@@ -1,4 +1,4 @@
 from .dist_opt import \
     FullyDistributedOptimizer, \
-    IntraNodeAcceleratedDistributedOptimizer, \
+    IntraNodeAcceleratedOptimizer, \
     HierarchicalDistributedOptimizer
