@@ -30,13 +30,17 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
 
         self.world_size = torch.distributed.get_world_size()
         self.rank = torch.distributed.get_rank()
+        self.local_rank = args.local_rank
+        self.device_count = torch.cuda.device_count()
+
+        # MLPerf GNMT has 160671297 parameters
+        self.gnmt_sizes = [[4096, 1024], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [32320, 1024], [4096, 1024], [4096, 1024], [4096], [4096], [1024], [1], [1024], [1024, 1024], [1024, 1024], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [32320, 1024], [32320]]
 
         self.barrier()
 
     def barrier(self):
         if torch.distributed.is_available() and torch.distributed.is_initialized():
-            torch.distributed.all_reduce(torch.cuda.FloatTensor(1))
-            torch.cuda.synchronize()
+            torch.distributed.barrier()
 
     def gen_test_inputs(self, sizes, ref_optim_class, tst_optim_class,
         ref_optim_option, tst_optim_option, random=True):
@@ -107,7 +111,7 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
 
     def test_fully_distributed_optimizer_function(self):
         iters = 4
-        sizes = [[4096, 1024], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [32320, 1024], [4096, 1024], [4096, 1024], [4096], [4096], [1024], [1], [1024], [1024, 1024], [1024, 1024], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [32320, 1024], [32320]]
+        sizes = self.gnmt_sizes
         adam_option = {'lr':1e-2, 'betas':(0.9, 0.999), 'eps':1e-08,
             'weight_decay':0, 'amsgrad':False}
         scale = 4.0
@@ -126,17 +130,37 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
 
             self.print_max_diff_elem(ref_param, tst_param)
            
+    def test_hierarchical_distributed_optimizer_function(self):
+        iters = 4
+        sizes = self.gnmt_sizes
+        adam_option = {'lr':1e-2, 'betas':(0.9, 0.999), 'eps':1e-08,
+            'weight_decay':0, 'amsgrad':False}
+        scale = 4.0
+
+        ref_param, tst_param, ref_optim, tst_optim = \
+            self.gen_test_inputs(sizes, apex.optimizers.FusedAdam,
+            dist_optimizer.HierarchicalDistributedOptimizer,
+            adam_option, adam_option, random=True)
+
+        for i in range(iters):
+            ref_grads, tst_grads = self.gen_mixed_grad(tst_param, random=True)
+
+            torch.distributed.all_reduce(ref_grads[0], async_op=False)
+            ref_optim.step(grads=ref_grads, scale=scale)
+            tst_optim.step(grads=tst_grads, scale=scale)
+
+            self.print_max_diff_elem(ref_param, tst_param)
+           
     def test_dist_opt_perf(self):
-        # MLPerf GNMT has 160671297 parameters
         iters = 1000
-        sizes = [[4096, 1024], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [32320, 1024], [4096, 1024], [4096, 1024], [4096], [4096], [1024], [1], [1024], [1024, 1024], [1024, 1024], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [32320, 1024], [32320]]
+        sizes = self.gnmt_sizes
         adam_option = {'lr':1e-3, 'betas':(0.9, 0.999), 'eps':1e-08,
             'weight_decay':0, 'amsgrad':False}
         scale = 4.0
 
         ref_param, tst_param, ref_optim, tst_optim = \
             self.gen_test_inputs(sizes, apex.optimizers.FusedAdam,
-            dist_optimizer.FullyDistributedOptimizer, adam_option, adam_option)
+            dist_optimizer.HierarchicalDistributedOptimizer, adam_option, adam_option)
         ref_grads, tst_grads = self.gen_mixed_grad(tst_param, random=False)
 
         # Warm up
@@ -167,5 +191,6 @@ if __name__ == '__main__':
     test = FullyDistributedOptimizerTest()
     test.setUp()
     test.test_fully_distributed_optimizer_function()
+    test.test_hierarchical_distributed_optimizer_function()
     test.test_dist_opt_perf()
 
