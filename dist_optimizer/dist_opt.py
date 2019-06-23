@@ -487,6 +487,106 @@ class IntraNodeAcceleratedOptimizer(BasicDistributedOptimizer):
 
         return True
 
+class TwoLevelDistributedOptimizer(BasicDistributedOptimizer):
+    """
+    Two level distributed optimizer with mixed precision for PyTorch.
+    Distributed strategy:
+    1. intra-node reduce gradients to local rank 0;
+    2. inter-node all-reduce gradients of all local rank 0;
+    3. intra-node broadcast gradients;
+    4. weight update;
+    """
+    def __init__(self, params, optimizer, grad_clip=None, align=64, **args):
+        super(TwoLevelDistributedOptimizer, self).__init__(params,
+            optimizer, grad_clip, align)
+
+        # Create process group for local rank 0
+        self.device_0_pg = None
+        if self.nodes > 1:
+            self.device_0_pg = torch.distributed.new_group(ranks=
+                list(range(0, self.world_size, self.devices)))
+
+        # Create process group for ranks within the same node
+        self.node_pg = []
+        for i in range(self.nodes):
+            self.node_pg.append(torch.distributed.new_group(ranks=
+                list(range(i * self.devices, (i + 1) * self.devices))))
+
+        # Align to LCM of (nodes, devices, CUDA performance requirement)
+        self.align = abs(self.nodes * self.devices * align) // \
+            math.gcd(math.gcd(self.nodes, self.devices), align)
+
+        # Flatten model's FP16 parameters, self.fp16_grads must be flattened
+        # each time bprop is finish
+        self.fp16_params, self.fp16_grads, self.nelem = \
+            self.flatten_params_(params, self.align)
+
+        # Locate rank start, offset with respect to total parameters
+        self.rank_nelem = self.nelem
+        self.params_start_idx, self.param_offset = \
+            self.locate_rank_elem_(params, self.align, 0, self.rank_nelem)
+
+        # Create per rank local FP32 master parameters and initialize
+        self.fp32_params = torch.zeros(self.rank_nelem, dtype=torch.float,
+            device='cuda')
+        self.initialize_fp32_params(self.fp32_params, params, self.params_start_idx,
+            self.param_offset, self.align, self.rank_nelem)
+
+        # Create real optimizer
+        self.optimizer = optimizer([self.fp32_params], **args)
+
+    def step(self, **args):
+        # Flatten the model's fp16 gradients
+        self.flatten_fp16_grads_(self.fp16_grads, self.params, self.align)
+
+        # Intra-node reduce fp16 gradients to local rank 0
+        torch.distributed.reduce(self.fp16_grads,
+            self.rank - self.device_rank,
+            group=self.node_pg[self.node_rank], async_op=True)
+
+        if self.nodes > 1:
+            # FIXME: we should have a barrier among device_0_pg here,
+            # but that somehow doesn't work
+            torch.distributed.barrier()
+
+            # Inter-node all-reduce fp16 gradients among local rank 0
+            torch.distributed.all_reduce(self.fp16_grads,
+                group=self.device_0_pg, async_op=True)
+
+        # FIXME: we should have a barrier among node_pg[node_rank] here,
+        # but that somehow doesn't work
+        torch.distributed.barrier()
+
+        # Intra-node broadcast fp16 gradients
+        torch.distributed.broadcast(self.fp16_grads,
+            self.rank - self.device_rank,
+            group=self.node_pg[self.node_rank], async_op=True)
+
+        # FIXME: we should have a barrier among node_pg[node_rank] here,
+        # but that somehow doesn't work
+        torch.distributed.barrier()
+
+        # Collect gradient norm if need gradient clipping
+        # Since each rank contains whole gradients, we don't use distributed
+        # norm here
+        if self.grad_clip:
+            total_norm = self.grad_norm([], self.fp16_grads,
+                self.device_rank, group=self.node_pg[self.node_rank])
+            clip_coef = self.grad_clip / (total_norm + 1e-6)
+            clip_coef = min(clip_coef, 1)
+
+            # Skill step if norm is illegal
+            if not math.isfinite(total_norm):
+                return False
+
+        # Step optimizer with scale
+        args['scale'] /= clip_coef
+        args['grads'] = [self.fp16_grads]
+        args['output_params'] = [self.fp16_params]
+        self.optimizer.step(**args)
+
+        return True
+
 class HierarchicalDistributedOptimizer(BasicDistributedOptimizer):
     """
     Hierarchical distributed optimizer with mixed precision for PyTorch.
