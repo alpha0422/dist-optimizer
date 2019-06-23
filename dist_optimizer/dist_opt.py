@@ -147,8 +147,8 @@ class BasicDistributedOptimizer(object):
             norms.append(torch.empty(1, dtype=torch.float, device='cuda'))
         return norms
 
-    def build_reduce_scatter_grads_(self, fp16_grads, align, world_size, rank_nelem):
-        # Build buffer for reduce scatter FP16 gradients
+    def build_fp16_grads_chunks_(self, fp16_grads, align, world_size, rank_nelem):
+        # Build chunks of FP16 gradients
         # Share the same storage as the flattened gradients
         assert fp16_grads.numel() == world_size * rank_nelem, \
             "Invalid gradient size."
@@ -244,7 +244,7 @@ class FullyDistributedOptimizer(BasicDistributedOptimizer):
             self.param_offset, self.align, self.rank_nelem)
 
         # Create FP16 gradient buffer for reduce-scatter
-        self.fp16_grads_list = self.build_reduce_scatter_grads_(self.fp16_grads,
+        self.fp16_grads_list = self.build_fp16_grads_chunks_(self.fp16_grads,
             self.align, self.world_size, self.rank_nelem)
 
         # Create real optimizer
@@ -300,7 +300,7 @@ class IntraNodeAcceleratedDistributedOptimizer(BasicDistributedOptimizer):
     3. intra-node all-gather weights;
     """
     def __init__(self, params, optimizer, grad_clip=None, align=64, **args):
-        super(HierarchicalDistributedOptimizer, self).__init__(params,
+        super(IntraNodeAcceleratedDistributedOptimizer, self).__init__(params,
             optimizer, grad_clip, align)
 
         # Create process group for ranks within the same node
@@ -328,6 +328,10 @@ class IntraNodeAcceleratedDistributedOptimizer(BasicDistributedOptimizer):
             device='cuda')
         self.initialize_fp32_params(self.fp32_params, params, self.params_start_idx,
             self.param_offset, self.align, self.rank_nelem)
+
+        # Create FP16 gradient buffer for all-gather
+        self.fp16_grads_list = self.build_fp16_grads_chunks_(self.fp16_grads,
+            self.align, self.devices, self.rank_nelem)
 
         # Create real optimizer
         self.optimizer = optimizer([self.fp32_params], **args)
@@ -419,7 +423,7 @@ class HierarchicalDistributedOptimizer(BasicDistributedOptimizer):
             self.param_offset, self.align, self.rank_nelem)
 
         # Create FP16 gradient buffer for reduce-scatter
-        self.fp16_grads_list = self.build_reduce_scatter_grads_(self.fp16_grads,
+        self.fp16_grads_list = self.build_fp16_grads_chunks_(self.fp16_grads,
             self.align, self.devices, self.rank_nelem)
 
         # Create real optimizer
