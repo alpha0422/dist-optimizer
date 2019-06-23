@@ -22,6 +22,15 @@ class BasicDistributedOptimizer(object):
         self.world_size = torch.distributed.get_world_size()
         self.rank = torch.distributed.get_rank()
 
+        self.devices = torch.cuda.device_count()
+        assert self.world_size % self.devices == 0, \
+            "Expect nodes to have the same number of devices."
+
+        # FIXME: is it for sure rank % device_count is args.local_rank?
+        self.nodes = self.world_size // self.devices
+        self.device_rank = self.rank % self.devices
+        self.node_rank = self.rank // self.devices
+
     def flatten_params_(self, params, align):
         """
         Flatten FP16 model's parameters.
@@ -180,6 +189,9 @@ class BasicDistributedOptimizer(object):
         norm_type = 2
         clip_coef = 1.0
 
+        if hasattr(fp16_grads_list, 'norm'):
+            return fp16_grads_list.norm(norm_type)
+
         norm = fp16_grads_list[rank].norm(norm_type)
         norm_buffer[rank][0] = norm
 
@@ -279,6 +291,87 @@ class FullyDistributedOptimizer(BasicDistributedOptimizer):
 
         return True
 
+class IntraNodeAcceleratedDistributedOptimizer(BasicDistributedOptimizer):
+    """
+    Intra-node accelerated distributed optimizer with mixed precision for PyTorch.
+    Distributed strategy:
+    1. all-reduce gradients among all ranks;
+    2. weight update with 1 / devices protion;
+    3. intra-node all-gather weights;
+    """
+    def __init__(self, params, optimizer, grad_clip=None, align=64, **args):
+        super(HierarchicalDistributedOptimizer, self).__init__(params,
+            optimizer, grad_clip, align)
+
+        # Create process group for ranks within the same node
+        self.node_pg = []
+        for i in range(self.nodes):
+            self.node_pg.append(torch.distributed.new_group(ranks=
+                list(range(i * self.devices, (i + 1) * self.devices))))
+
+        # Align to LCM of (nodes, devices, CUDA performance requirement)
+        self.align = abs(self.nodes * self.devices * align) // \
+            math.gcd(math.gcd(self.nodes, self.devices), align)
+
+        # Flatten model's FP16 parameters, self.fp16_grads must be flattened
+        # each time bprop is finish
+        self.fp16_params, self.fp16_grads, self.nelem = \
+            self.flatten_params_(params, self.align)
+
+        # Locate rank start, offset with respect to total parameters
+        self.rank_nelem = self.nelem // self.devices
+        self.params_start_idx, self.param_offset = \
+            self.locate_rank_elem_(params, self.align, self.device_rank, self.rank_nelem)
+
+        # Create per rank local FP32 master parameters and initialize
+        self.fp32_params = torch.zeros(self.rank_nelem, dtype=torch.float,
+            device='cuda')
+        self.initialize_fp32_params(self.fp32_params, params, self.params_start_idx,
+            self.param_offset, self.align, self.rank_nelem)
+
+        # Create real optimizer
+        self.optimizer = optimizer([self.fp32_params], **args)
+
+        # Create list of tensors for all-gather FP6 weights
+        # The buffer for gather share the same storage as flattened FP16 weight
+        self.fp16_params_list = self.build_all_gather_weights_(self.fp16_params,
+            self.align, self.devices, self.rank_nelem)
+
+    def step(self, **args):
+        # Flatten the model's fp16 gradients
+        self.flatten_fp16_grads_(self.fp16_grads, self.params, self.align)
+
+        # All-reduce fp16 gradients
+        torch.distributed.all_reduce(self.fp16_grads, async_op=False)
+
+        # Collect gradient norm if need gradient clipping
+        # Since each rank contains whole gradients, we don't use distributed
+        # norm here
+        if self.grad_clip:
+            total_norm = self.grad_norm([], self.fp16_grads,
+                self.device_rank, group=self.node_pg[self.node_rank])
+            clip_coef = self.grad_clip / (total_norm + 1e-6)
+            clip_coef = min(clip_coef, 1)
+
+            # Skill step if norm is illegal
+            if not math.isfinite(total_norm):
+                return False
+
+        # Step optimizer with scale
+        args['scale'] /= clip_coef
+        args['grads'] = [self.fp16_grads_list[self.device_rank]]
+        args['output_params'] = [self.fp16_params_list[self.device_rank]]
+        self.optimizer.step(**args)
+
+        # All gather FP16 parameters
+        # Since the flattened FP16 parameters and model parameters share the
+        # same storage, all_gather is the last step here
+        torch.distributed.all_gather(self.fp16_params_list,
+            self.fp16_params_list[self.device_rank], group=self.node_pg[self.node_rank],
+            async_op=False)
+
+        return True
+
 class HierarchicalDistributedOptimizer(BasicDistributedOptimizer):
     """
     Hierarchical distributed optimizer with mixed precision for PyTorch.
@@ -291,15 +384,6 @@ class HierarchicalDistributedOptimizer(BasicDistributedOptimizer):
     def __init__(self, params, optimizer, grad_clip=None, align=64, **args):
         super(HierarchicalDistributedOptimizer, self).__init__(params,
             optimizer, grad_clip, align)
-
-        self.devices = torch.cuda.device_count()
-        assert self.world_size % self.devices == 0, \
-            "Expect nodes to have the same number of devices."
-
-        # FIXME: is it for sure rank % device_count is args.local_rank?
-        self.nodes = self.world_size // self.devices
-        self.device_rank = self.rank % self.devices
-        self.node_rank = self.rank // self.devices
 
         # Create process group for ranks with the same local rank
         self.device_pg = []
