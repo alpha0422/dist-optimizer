@@ -368,7 +368,7 @@ class IntraNodeDistributedOptimizer(BasicDistributedOptimizer):
         # All-gather fp16 gradients within the same local ranks
         if self.nodes > 1:
             torch.distributed.all_gather(self.fp16_grads_list_global[
-                self.device_rank : self.world_size : self.nodes],
+                self.device_rank : self.world_size : self.devices],
                 self.fp16_grads_list_global[self.rank],
                 group=self.device_pg[self.device_rank], async_op=False)
 
