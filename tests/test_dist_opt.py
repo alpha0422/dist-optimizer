@@ -223,7 +223,7 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
         grad_clip = None
         scale = 1.0
 
-        for size in range(20, 31):
+        for size in range(30, 19, -1):
             sizes = [[2**(size-1)]]
             print("{}:{} Test {} half elements".format(
                 self.world_size, self.rank, sizes[0][0]))
@@ -235,6 +235,7 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
             ref_grads, tst_grads = self.gen_mixed_grad(tst_param, random=False)
     
             # Test default all-reduce optimizer
+            torch.cuda.empty_cache()
             torch.distributed.all_reduce(ref_grads[0], async_op=False)
             ref_optim.step(grads=ref_grads, scale=scale)
     
@@ -247,8 +248,10 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
             td = time.time()
             print("{}:{} Ref time {:.2f} s elapsed for {} iterations, norm {:.4f}".format(
                 self.world_size, self.rank, td - ts, iters, self.norm(ref_param)))
-    
+            del ref_grads, ref_param, ref_optim
+            
             # Test FullyDistributedOptimizer
+            torch.cuda.empty_cache()
             tst_optim = dist_optimizer.FullyDistributedOptimizer(
                 tst_param, apex.optimizers.FusedAdam,
                 grad_clip=grad_clip, align=64, **adam_option)
@@ -262,8 +265,10 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
             td = time.time()
             print("{}:{} FullyDistributedOptimizer time {:.2f} s elapsed for {} iterations, norm {:.4f}".format(
                 self.world_size, self.rank, td - ts, iters, self.norm(tst_param)))
+            del tst_optim
     
             # Test IntraNodeDistributedOptimizer
+            torch.cuda.empty_cache()
             tst_optim = dist_optimizer.IntraNodeDistributedOptimizer(
                 tst_param, apex.optimizers.FusedAdam,
                 grad_clip=grad_clip, align=64, **adam_option)
@@ -277,8 +282,10 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
             td = time.time()
             print("{}:{} IntraNodeDistributedOptimizer time {:.2f} s elapsed for {} iterations, norm {:.4f}".format(
                 self.world_size, self.rank, td - ts, iters, self.norm(tst_param)))
+            del tst_optim
     
             # Test IntraNodeAcceleratedOptimizer
+            torch.cuda.empty_cache()
             tst_optim = dist_optimizer.IntraNodeAcceleratedOptimizer(
                 tst_param, apex.optimizers.FusedAdam,
                 grad_clip=grad_clip, align=64, **adam_option)
@@ -292,8 +299,10 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
             td = time.time()
             print("{}:{} IntraNodeAcceleratedOptimizer time {:.2f} s elapsed for {} iterations, norm {:.4f}".format(
                 self.world_size, self.rank, td - ts, iters, self.norm(tst_param)))
+            del tst_optim
     
             # Test TwoLevelDistributedOptimizer
+            torch.cuda.empty_cache()
             tst_optim = dist_optimizer.TwoLevelDistributedOptimizer(
                 tst_param, apex.optimizers.FusedAdam,
                 grad_clip=grad_clip, align=64, **adam_option)
@@ -307,8 +316,10 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
             td = time.time()
             print("{}:{} TwoLevelDistributedOptimizer time {:.2f} s elapsed for {} iterations, norm {:.4f}".format(
                 self.world_size, self.rank, td - ts, iters, self.norm(tst_param)))
-
+            del tst_optim
+            
             # Test HierarchicalDistributedOptimizer
+            torch.cuda.empty_cache()
             tst_optim = dist_optimizer.HierarchicalDistributedOptimizer(
                 tst_param, apex.optimizers.FusedAdam,
                 grad_clip=grad_clip, align=64, **adam_option)
@@ -322,10 +333,17 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
             td = time.time()
             print("{}:{} HierarchicalDistributedOptimizer time {:.2f} s elapsed for {} iterations, norm {:.4f}".format(
                 self.world_size, self.rank, td - ts, iters, self.norm(tst_param)))
+            del tst_grads, tst_param, tst_optim
 
 if __name__ == '__main__':
     test = FullyDistributedOptimizerTest()
     test.setUp()
+
+    torch.distributed.barrier()
+    print("Checking distributed optimizer performance ...")
+    test.test_dist_opt_perf()
+
+    torch.cuda.empty_cache()
 
     torch.distributed.barrier()
     print("Checking FullyDistributedOptimizer functionality ...")
@@ -346,8 +364,4 @@ if __name__ == '__main__':
     torch.distributed.barrier()
     print("Checking HierarchicalDistributedOptimizer functionality ...")
     test.test_hierarchical_distributed_optimizer_function()
-
-    torch.distributed.barrier()
-    print("Checking distributed optimizer performance ...")
-    test.test_dist_opt_perf()
 
