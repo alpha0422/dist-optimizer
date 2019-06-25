@@ -268,6 +268,7 @@ class FullyDistributedOptimizer(BasicDistributedOptimizer):
             self.fp16_grads_list, async_op=False)
 
         # Collect gradient norm if need gradient clipping
+        clip_coef = 1.0
         if self.grad_clip:
             total_norm = self.grad_norm(self.norms, self.fp16_grads_list, self.rank)
             clip_coef = self.grad_clip / (total_norm + 1e-6)
@@ -377,6 +378,7 @@ class IntraNodeDistributedOptimizer(BasicDistributedOptimizer):
             torch.distributed.barrier()
 
         # Collect gradient norm if need gradient clipping
+        clip_coef = 1.0
         if self.grad_clip:
             total_norm = self.grad_norm(self.norms, self.fp16_grads_list_device,
                 self.device_rank, group=self.node_pg[self.node_rank])
@@ -462,6 +464,7 @@ class IntraNodeAcceleratedOptimizer(BasicDistributedOptimizer):
         # Collect gradient norm if need gradient clipping
         # Since each rank contains whole gradients, we don't use distributed
         # norm here
+        clip_coef = 1.0
         if self.grad_clip:
             total_norm = self.grad_norm([], self.fp16_grads,
                 self.device_rank, group=self.node_pg[self.node_rank])
@@ -569,6 +572,7 @@ class TwoLevelDistributedOptimizer(BasicDistributedOptimizer):
         # Collect gradient norm if need gradient clipping
         # Since each rank contains whole gradients, we don't use distributed
         # norm here
+        clip_coef = 1.0
         if self.grad_clip:
             total_norm = self.grad_norm([], self.fp16_grads,
                 self.device_rank, group=self.node_pg[self.node_rank])
@@ -671,6 +675,7 @@ class HierarchicalDistributedOptimizer(BasicDistributedOptimizer):
         torch.distributed.barrier()
 
         # Collect gradient norm if need gradient clipping
+        clip_coef = 1.0
         if self.grad_clip:
             total_norm = self.grad_norm(self.norms, self.fp16_grads_list,
                 self.device_rank, group=self.node_pg[self.node_rank])
