@@ -288,7 +288,10 @@ class FullyDistributedOptimizer(BasicDistributedOptimizer):
         # Since the flattened FP16 parameters and model parameters share the
         # same storage, all_gather is the last step here
         torch.distributed.all_gather(self.fp16_params_list,
-            self.fp16_params_list[self.rank], async_op=False)
+            self.fp16_params_list[self.rank], async_op=True)
+        # FIXME: expect no global sync here, but the measured time swings in a
+        # large range
+        torch.distributed.barrier()
 
         return True
 
@@ -400,7 +403,10 @@ class IntraNodeDistributedOptimizer(BasicDistributedOptimizer):
         # same storage, all_gather is the last step here
         torch.distributed.all_gather(self.fp16_params_list,
             self.fp16_params_list[self.device_rank], group=self.node_pg[self.node_rank],
-            async_op=False)
+            async_op=True)
+        # FIXME: expect no global sync here, but the measured time swings in a
+        # large range
+        torch.distributed.barrier()
 
         return True
 
@@ -486,7 +492,10 @@ class IntraNodeAcceleratedOptimizer(BasicDistributedOptimizer):
         # same storage, all_gather is the last step here
         torch.distributed.all_gather(self.fp16_params_list,
             self.fp16_params_list[self.device_rank], group=self.node_pg[self.node_rank],
-            async_op=False)
+            async_op=True)
+        # FIXME: expect no global sync here, but the measured time swings in a
+        # large range
+        torch.distributed.barrier()
 
         return True
 
@@ -697,7 +706,10 @@ class HierarchicalDistributedOptimizer(BasicDistributedOptimizer):
         # same storage, all_gather is the last step here
         torch.distributed.all_gather(self.fp16_params_list,
             self.fp16_params_list[self.device_rank], group=self.node_pg[self.node_rank],
-            async_op=False)
+            async_op=True)
+        # FIXME: expect no global sync here, but the measured time swings in a
+        # large range
+        torch.distributed.barrier()
 
         return True
 
