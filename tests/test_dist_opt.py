@@ -86,6 +86,7 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
         ref, tst = ref.flatten(), tst.flatten()
         diff = (ref - tst).abs().max()
         idx = (ref - tst).abs().argmax()
+        
         print("{}:{} Max diff: idx: {}, diff: {:.6f}, ref: {:.6f}, tst: {:.6f}".format(
             self.world_size, self.rank, idx, diff, ref[idx], tst[idx]))
 
@@ -219,37 +220,108 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
         sizes = self.gnmt_sizes
         adam_option = {'lr':1e-3, 'betas':(0.9, 0.999), 'eps':1e-08,
             'weight_decay':0, 'amsgrad':False}
-        scale = 4.0
+        grad_clip = None
+        scale = 1.0
 
-        ref_param, tst_param, ref_optim, tst_optim = \
-            self.gen_test_inputs(sizes, apex.optimizers.FusedAdam,
-            dist_optimizer.TwoLevelDistributedOptimizer,
-            adam_option, adam_option)
-        ref_grads, tst_grads = self.gen_mixed_grad(tst_param, random=False)
+        for size in range(20, 31):
+            sizes = [[2**(size-1)]]
+            print("{}:{} Test {} half elements".format(
+                self.world_size, self.rank, sizes[0][0]))
 
-        # Warm up
-        torch.distributed.all_reduce(ref_grads[0], async_op=False)
-        ref_optim.step(grads=ref_grads, scale=scale)
-        tst_optim.step(grads=tst_grads, scale=scale)
-
-        self.barrier()
-        ts = time.time()
-        for i in range(iters):
+            ref_param, tst_param, ref_optim, tst_optim = \
+                self.gen_test_inputs(sizes, apex.optimizers.FusedAdam,
+                dist_optimizer.FullyDistributedOptimizer,
+                adam_option, adam_option)
+            ref_grads, tst_grads = self.gen_mixed_grad(tst_param, random=False)
+    
+            # Test default all-reduce optimizer
             torch.distributed.all_reduce(ref_grads[0], async_op=False)
             ref_optim.step(grads=ref_grads, scale=scale)
-        self.barrier()
-        td = time.time()
-        print("{}:{} Ref time {:.2f} s elapsed for {} iterations, norm {:.4f}".format(
-            self.world_size, self.rank, td - ts, iters, self.norm(ref_param)))
+    
+            self.barrier()
+            ts = time.time()
+            for i in range(iters):
+                torch.distributed.all_reduce(ref_grads[0], async_op=False)
+                ref_optim.step(grads=ref_grads, scale=scale)
+            self.barrier()
+            td = time.time()
+            print("{}:{} Ref time {:.2f} s elapsed for {} iterations, norm {:.4f}".format(
+                self.world_size, self.rank, td - ts, iters, self.norm(ref_param)))
+    
+            # Test FullyDistributedOptimizer
+            tst_optim = dist_optimizer.FullyDistributedOptimizer(
+                tst_param, apex.optimizers.FusedAdam,
+                grad_clip=grad_clip, align=64, **adam_option)
+            tst_optim.step(scale=scale)
+    
+            self.barrier()
+            ts = time.time()
+            for i in range(iters):
+                tst_optim.step(scale=scale)
+            self.barrier()
+            td = time.time()
+            print("{}:{} FullyDistributedOptimizer time {:.2f} s elapsed for {} iterations, norm {:.4f}".format(
+                self.world_size, self.rank, td - ts, iters, self.norm(tst_param)))
+    
+            # Test IntraNodeDistributedOptimizer
+            tst_optim = dist_optimizer.IntraNodeDistributedOptimizer(
+                tst_param, apex.optimizers.FusedAdam,
+                grad_clip=grad_clip, align=64, **adam_option)
+            tst_optim.step(scale=scale)
+    
+            self.barrier()
+            ts = time.time()
+            for i in range(iters):
+                tst_optim.step(scale=scale)
+            self.barrier()
+            td = time.time()
+            print("{}:{} IntraNodeDistributedOptimizer time {:.2f} s elapsed for {} iterations, norm {:.4f}".format(
+                self.world_size, self.rank, td - ts, iters, self.norm(tst_param)))
+    
+            # Test IntraNodeAcceleratedOptimizer
+            tst_optim = dist_optimizer.IntraNodeAcceleratedOptimizer(
+                tst_param, apex.optimizers.FusedAdam,
+                grad_clip=grad_clip, align=64, **adam_option)
+            tst_optim.step(scale=scale)
+    
+            self.barrier()
+            ts = time.time()
+            for i in range(iters):
+                tst_optim.step(scale=scale)
+            self.barrier()
+            td = time.time()
+            print("{}:{} IntraNodeAcceleratedOptimizer time {:.2f} s elapsed for {} iterations, norm {:.4f}".format(
+                self.world_size, self.rank, td - ts, iters, self.norm(tst_param)))
+    
+            # Test TwoLevelDistributedOptimizer
+            tst_optim = dist_optimizer.TwoLevelDistributedOptimizer(
+                tst_param, apex.optimizers.FusedAdam,
+                grad_clip=grad_clip, align=64, **adam_option)
+            tst_optim.step(scale=scale)
+    
+            self.barrier()
+            ts = time.time()
+            for i in range(iters):
+                tst_optim.step(scale=scale)
+            self.barrier()
+            td = time.time()
+            print("{}:{} TwoLevelDistributedOptimizer time {:.2f} s elapsed for {} iterations, norm {:.4f}".format(
+                self.world_size, self.rank, td - ts, iters, self.norm(tst_param)))
 
-        self.barrier()
-        ts = time.time()
-        for i in range(iters):
-            tst_optim.step(grads=tst_grads, scale=scale)
-        self.barrier()
-        td = time.time()
-        print("{}:{} Opt time {:.2f} s elapsed for {} iterations, norm {:.4f}".format(
-            self.world_size, self.rank, td - ts, iters, self.norm(tst_param)))
+            # Test HierarchicalDistributedOptimizer
+            tst_optim = dist_optimizer.HierarchicalDistributedOptimizer(
+                tst_param, apex.optimizers.FusedAdam,
+                grad_clip=grad_clip, align=64, **adam_option)
+            tst_optim.step(scale=scale)
+    
+            self.barrier()
+            ts = time.time()
+            for i in range(iters):
+                tst_optim.step(scale=scale)
+            self.barrier()
+            td = time.time()
+            print("{}:{} HierarchicalDistributedOptimizer time {:.2f} s elapsed for {} iterations, norm {:.4f}".format(
+                self.world_size, self.rank, td - ts, iters, self.norm(tst_param)))
 
 if __name__ == '__main__':
     test = FullyDistributedOptimizerTest()
