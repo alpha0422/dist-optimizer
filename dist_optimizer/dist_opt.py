@@ -260,6 +260,9 @@ class FullyDistributedOptimizer(BasicDistributedOptimizer):
             self.align, self.world_size, self.rank_nelem)
 
     def step(self, update=True, **args):
+        # Gradient will be averaged by world size
+        args['scale'] = args.get('scale', 1.0) * self.world_size
+
         # Flatten the model's fp16 gradients
         self.flatten_fp16_grads_(self.fp16_grads, self.params, self.align)
 
@@ -271,6 +274,7 @@ class FullyDistributedOptimizer(BasicDistributedOptimizer):
         clip_coef = 1.0
         if self.grad_clip:
             total_norm = self.grad_norm(self.norms, self.fp16_grads_list, self.rank)
+            total_norm /= args['scale']
             clip_coef = self.grad_clip / (total_norm + 1e-6)
             clip_coef = min(clip_coef, 1)
 
@@ -362,6 +366,9 @@ class IntraNodeDistributedOptimizer(BasicDistributedOptimizer):
             self.align, self.devices, self.rank_nelem)
 
     def step(self, update=True, **args):
+        # Gradient will be averaged by world size
+        args['scale'] = args.get('scale', 1.0) * self.world_size
+
         # Flatten the model's fp16 gradients
         self.flatten_fp16_grads_(self.fp16_grads, self.params, self.align)
 
@@ -385,6 +392,7 @@ class IntraNodeDistributedOptimizer(BasicDistributedOptimizer):
         if self.grad_clip:
             total_norm = self.grad_norm(self.norms, self.fp16_grads_list_device,
                 self.device_rank, group=self.node_pg[self.node_rank])
+            total_norm /= args['scale']
             clip_coef = self.grad_clip / (total_norm + 1e-6)
             clip_coef = min(clip_coef, 1)
 
@@ -461,6 +469,9 @@ class IntraNodeAcceleratedOptimizer(BasicDistributedOptimizer):
             self.align, self.devices, self.rank_nelem)
 
     def step(self, update=True, **args):
+        # Gradient will be averaged by world size
+        args['scale'] = args.get('scale', 1.0) * self.world_size
+
         # Flatten the model's fp16 gradients
         self.flatten_fp16_grads_(self.fp16_grads, self.params, self.align)
 
@@ -474,6 +485,7 @@ class IntraNodeAcceleratedOptimizer(BasicDistributedOptimizer):
         if self.grad_clip:
             total_norm = self.grad_norm([], self.fp16_grads,
                 self.device_rank, group=self.node_pg[self.node_rank])
+            total_norm /= args['scale']
             clip_coef = self.grad_clip / (total_norm + 1e-6)
             clip_coef = min(clip_coef, 1)
 
@@ -548,6 +560,9 @@ class TwoLevelDistributedOptimizer(BasicDistributedOptimizer):
         self.optimizer = optimizer([self.fp32_params], **args)
 
     def step(self, update=True, **args):
+        # Gradient will be averaged by world size
+        args['scale'] = args.get('scale', 1.0) * self.world_size
+
         # Flatten the model's fp16 gradients
         self.flatten_fp16_grads_(self.fp16_grads, self.params, self.align)
 
@@ -585,6 +600,7 @@ class TwoLevelDistributedOptimizer(BasicDistributedOptimizer):
         if self.grad_clip:
             total_norm = self.grad_norm([], self.fp16_grads,
                 self.device_rank, group=self.node_pg[self.node_rank])
+            total_norm /= args['scale']
             clip_coef = self.grad_clip / (total_norm + 1e-6)
             clip_coef = min(clip_coef, 1)
 
@@ -663,6 +679,9 @@ class HierarchicalDistributedOptimizer(BasicDistributedOptimizer):
             self.align, self.devices, self.rank_nelem)
 
     def step(self, update=True, **args):
+        # Gradient will be averaged by world size
+        args['scale'] = args.get('scale', 1.0) * self.world_size
+
         # Flatten the model's fp16 gradients
         self.flatten_fp16_grads_(self.fp16_grads, self.params, self.align)
 
@@ -688,6 +707,7 @@ class HierarchicalDistributedOptimizer(BasicDistributedOptimizer):
         if self.grad_clip:
             total_norm = self.grad_norm(self.norms, self.fp16_grads_list,
                 self.device_rank, group=self.node_pg[self.node_rank])
+            total_norm /= args['scale']
             clip_coef = self.grad_clip / (total_norm + 1e-6)
             clip_coef = min(clip_coef, 1)
 
