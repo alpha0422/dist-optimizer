@@ -2,6 +2,19 @@
 
 import math
 import torch
+import ctypes
+
+lib = ctypes.cdll.LoadLibrary(None)
+lib.THCudaHalfTensor_normall.argtypes=[ctypes.c_void_p, ctypes.c_void_p]
+lib.THCudaHalfTensor_normall.restype = ctypes.c_float
+
+def fused_norm(input):
+    if input.type() == 'torch.cuda.HalfTensor':
+        # 16384 is half 2 if you stare at it long enough
+        return lib.THCudaHalfTensor_normall(torch.cuda._state_cdata,
+            input._cdata, 16384)
+    else:
+        return(input.norm())
 
 class BasicDistributedOptimizer(object):
     """
@@ -187,21 +200,21 @@ class BasicDistributedOptimizer(object):
         # Get the norm of gradients distributed in the process group
         total_norm = 0
         norm_type = 2
-        clip_coef = 1.0
 
         if hasattr(fp16_grads_list, 'norm'):
             return fp16_grads_list.norm(norm_type)
 
-        norm = fp16_grads_list[rank].norm(norm_type)
+        norm = fused_norm(fp16_grads_list[rank])
         norm_buffer[rank][0] = norm
 
         # All-gather other ranks' norm
         if group is not None:
             torch.distributed.all_gather(norm_buffer,
-                norm_buffer[rank], group=group, async_op=False)
+                norm_buffer[rank], group=group, async_op=True)
         else:
             torch.distributed.all_gather(norm_buffer,
-                norm_buffer[rank], async_op=False)
+                norm_buffer[rank], async_op=True)
+        torch.distributed.barrier()
 
         for p in norm_buffer:
             total_norm += p.item() ** norm_type
