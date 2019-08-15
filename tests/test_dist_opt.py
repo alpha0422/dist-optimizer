@@ -1,11 +1,16 @@
 import os
 import time
+import math
 import unittest
 import argparse
 
 import torch
 import apex
 import dist_optimizer
+
+from functools import reduce
+from operator import mul
+from torch.nn.utils import clip_grad_norm_
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -19,9 +24,31 @@ def parse_args():
     args, unknownargs = parser.parse_known_args()
     return args
 
-class FullyDistributedOptimizerTest(unittest.TestCase):
+class RefOptimizer(torch.optim.Optimizer):
+    def __init__(self, params, grad_clip=float('inf'), **options):
+        self.grad_clip = grad_clip
+        self.params = params
+        self.optim = apex.optimizers.FusedAdam(params, **options)
+        self.world_size = torch.distributed.get_world_size()
+
+    def step(self, grads, scale=1.0):
+        scale *= self.world_size
+        norm = (torch.cat(grads) / scale).norm(2).item()
+
+        if math.isfinite(norm):
+            clip_coef = self.grad_clip / (norm + 1e-6)
+            if clip_coef >= 1:
+                clip_coef = scale
+            else:
+                clip_coef = scale / clip_coef
+
+            self.optim.step(grads=grads, scale=clip_coef)
+            return True
+
+        return False
+
+class DistributedOptimizerTest(unittest.TestCase):
     def setUp(self):
-        torch.cuda.manual_seed(1234)
         args = parse_args()
 
         torch.cuda.set_device(args.local_rank)
@@ -33,8 +60,12 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
         self.local_rank = args.local_rank
         self.device_count = torch.cuda.device_count()
 
+        torch.manual_seed(4321)
+        torch.cuda.manual_seed(1234)
+
         # MLPerf GNMT has 160671297 parameters
         self.gnmt_sizes = [[4096, 1024], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [4096, 1024], [4096, 1024], [4096], [4096], [32320, 1024], [4096, 1024], [4096, 1024], [4096], [4096], [1024], [1], [1024], [1024, 1024], [1024, 1024], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [4096, 2048], [4096, 1024], [4096], [4096], [32320, 1024], [32320]]
+        self.grad_clip = 5.0
 
         self.barrier()
 
@@ -54,14 +85,15 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
         ref_param = []
         tst_param = []
         for tensor in tensors:
-            ref_param.append(torch.nn.Parameter(tensor.clone()))
+            ref_param.append(torch.nn.Parameter(tensor.clone().half().float()))
             tst_param.append(torch.nn.Parameter(tensor.clone().half()))
         with torch.no_grad():
             ref_param = [torch.cat([p.view(-1) for p in ref_param])]
 
-        ref_optim = ref_optim_class(ref_param, **ref_optim_option)
+        ref_optim = ref_optim_class(ref_param,
+            grad_clip=self.grad_clip, **ref_optim_option)
         tst_optim = tst_optim_class(tst_param, apex.optimizers.FusedAdam,
-            grad_clip=5.0, align=64, **tst_optim_option)
+            grad_clip=self.grad_clip, align=64, **tst_optim_option)
 
         return (ref_param, tst_param, ref_optim, tst_optim)
 
@@ -118,7 +150,7 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
         scale = 4.0
 
         ref_param, tst_param, ref_optim, tst_optim = \
-            self.gen_test_inputs(sizes, apex.optimizers.FusedAdam,
+            self.gen_test_inputs(sizes, RefOptimizer,
             dist_optimizer.FullyDistributedOptimizer,
             adam_option, adam_option, random=True)
 
@@ -126,9 +158,10 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
             ref_grads, tst_grads = self.gen_mixed_grad(tst_param, random=True)
 
             torch.distributed.all_reduce(ref_grads[0], async_op=False)
-            ref_optim.step(grads=ref_grads, scale=scale)
-            tst_optim.step(grads=tst_grads, scale=scale)
+            ref_steped = ref_optim.step(grads=ref_grads, scale=scale)
+            tst_steped = tst_optim.step(grads=tst_grads, scale=scale)
 
+            self.assertEqual(ref_steped, tst_steped)
             self.print_max_diff_elem(ref_param, tst_param)
            
     def test_intra_node_distributed_optimizer_function(self):
@@ -139,7 +172,7 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
         scale = 4.0
 
         ref_param, tst_param, ref_optim, tst_optim = \
-            self.gen_test_inputs(sizes, apex.optimizers.FusedAdam,
+            self.gen_test_inputs(sizes, RefOptimizer,
             dist_optimizer.IntraNodeDistributedOptimizer,
             adam_option, adam_option, random=True)
 
@@ -147,9 +180,10 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
             ref_grads, tst_grads = self.gen_mixed_grad(tst_param, random=True)
 
             torch.distributed.all_reduce(ref_grads[0], async_op=False)
-            ref_optim.step(grads=ref_grads, scale=scale)
-            tst_optim.step(grads=tst_grads, scale=scale)
+            ref_steped = ref_optim.step(grads=ref_grads, scale=scale)
+            tst_steped = tst_optim.step(grads=tst_grads, scale=scale)
 
+            self.assertEqual(ref_steped, tst_steped)
             self.print_max_diff_elem(ref_param, tst_param)
            
     def test_intra_node_accelerated_optimizer_function(self):
@@ -160,7 +194,7 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
         scale = 4.0
 
         ref_param, tst_param, ref_optim, tst_optim = \
-            self.gen_test_inputs(sizes, apex.optimizers.FusedAdam,
+            self.gen_test_inputs(sizes, RefOptimizer,
             dist_optimizer.IntraNodeAcceleratedOptimizer,
             adam_option, adam_option, random=True)
 
@@ -168,9 +202,10 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
             ref_grads, tst_grads = self.gen_mixed_grad(tst_param, random=True)
 
             torch.distributed.all_reduce(ref_grads[0], async_op=False)
-            ref_optim.step(grads=ref_grads, scale=scale)
-            tst_optim.step(grads=tst_grads, scale=scale)
+            ref_steped = ref_optim.step(grads=ref_grads, scale=scale)
+            tst_steped = tst_optim.step(grads=tst_grads, scale=scale)
 
+            self.assertEqual(ref_steped, tst_steped)
             self.print_max_diff_elem(ref_param, tst_param)
            
     def test_two_level_distributed_optimizer_function(self):
@@ -181,7 +216,7 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
         scale = 4.0
 
         ref_param, tst_param, ref_optim, tst_optim = \
-            self.gen_test_inputs(sizes, apex.optimizers.FusedAdam,
+            self.gen_test_inputs(sizes, RefOptimizer,
             dist_optimizer.TwoLevelDistributedOptimizer,
             adam_option, adam_option, random=True)
 
@@ -189,9 +224,10 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
             ref_grads, tst_grads = self.gen_mixed_grad(tst_param, random=True)
 
             torch.distributed.all_reduce(ref_grads[0], async_op=False)
-            ref_optim.step(grads=ref_grads, scale=scale)
-            tst_optim.step(grads=tst_grads, scale=scale)
+            ref_steped = ref_optim.step(grads=ref_grads, scale=scale)
+            tst_steped = tst_optim.step(grads=tst_grads, scale=scale)
 
+            self.assertEqual(ref_steped, tst_steped)
             self.print_max_diff_elem(ref_param, tst_param)
            
     def test_hierarchical_distributed_optimizer_function(self):
@@ -202,7 +238,7 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
         scale = 4.0
 
         ref_param, tst_param, ref_optim, tst_optim = \
-            self.gen_test_inputs(sizes, apex.optimizers.FusedAdam,
+            self.gen_test_inputs(sizes, RefOptimizer,
             dist_optimizer.HierarchicalDistributedOptimizer,
             adam_option, adam_option, random=True)
 
@@ -210,9 +246,10 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
             ref_grads, tst_grads = self.gen_mixed_grad(tst_param, random=True)
 
             torch.distributed.all_reduce(ref_grads[0], async_op=False)
-            ref_optim.step(grads=ref_grads, scale=scale)
-            tst_optim.step(grads=tst_grads, scale=scale)
+            ref_steped = ref_optim.step(grads=ref_grads, scale=scale)
+            tst_steped = tst_optim.step(grads=tst_grads, scale=scale)
 
+            self.assertEqual(ref_steped, tst_steped)
             self.print_max_diff_elem(ref_param, tst_param)
            
     def test_dist_opt_perf(self):
@@ -229,7 +266,7 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
                 self.world_size, self.rank, sizes[0][0]))
 
             ref_param, tst_param, ref_optim, tst_optim = \
-                self.gen_test_inputs(sizes, apex.optimizers.FusedAdam,
+                self.gen_test_inputs(sizes, RefOptimizer,
                 dist_optimizer.FullyDistributedOptimizer,
                 adam_option, adam_option)
             ref_grads, tst_grads = self.gen_mixed_grad(tst_param, random=False)
@@ -336,7 +373,7 @@ class FullyDistributedOptimizerTest(unittest.TestCase):
             del tst_grads, tst_param, tst_optim
 
 if __name__ == '__main__':
-    test = FullyDistributedOptimizerTest()
+    test = DistributedOptimizerTest()
     test.setUp()
 
     torch.distributed.barrier()
