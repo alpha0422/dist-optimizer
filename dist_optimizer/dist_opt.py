@@ -246,6 +246,9 @@ class FullyDistributedOptimizer(BasicDistributedOptimizer):
             self.flatten_params_(params, self.align)
         self.rank_nelem = self.nelem // self.world_size
 
+        # Broadcast parameter of rank 0
+        torch.distributed.broadcast(self.fp16_params, 0, async_op=False)
+
         # Locate rank start, offset with respect to total parameters
         self.params_start_idx, self.param_offset = \
             self.locate_rank_elem_(params, self.align, self.rank, self.rank_nelem)
@@ -349,6 +352,9 @@ class IntraNodeDistributedOptimizer(BasicDistributedOptimizer):
         # each time bprop is finish
         self.fp16_params, self.fp16_grads, self.nelem = \
             self.flatten_params_(params, self.align)
+
+        # Broadcast parameter of rank 0
+        torch.distributed.broadcast(self.fp16_params, 0, async_op=False)
 
         # Locate rank start, offset with respect to total parameters
         self.rank_nelem = self.nelem // self.devices
@@ -464,6 +470,9 @@ class IntraNodeAcceleratedOptimizer(BasicDistributedOptimizer):
         self.fp16_params, self.fp16_grads, self.nelem = \
             self.flatten_params_(params, self.align)
 
+        # Broadcast parameter of rank 0
+        torch.distributed.broadcast(self.fp16_params, 0, async_op=False)
+
         # Locate rank start, offset with respect to total parameters
         self.rank_nelem = self.nelem // self.devices
         self.params_start_idx, self.param_offset = \
@@ -566,6 +575,9 @@ class TwoLevelDistributedOptimizer(BasicDistributedOptimizer):
         # each time bprop is finish
         self.fp16_params, self.fp16_grads, self.nelem = \
             self.flatten_params_(params, self.align)
+
+        # Broadcast parameter of rank 0
+        torch.distributed.broadcast(self.fp16_params, 0, async_op=False)
 
         # Locate rank start, offset with respect to total parameters
         self.rank_nelem = self.nelem
@@ -675,6 +687,9 @@ class HierarchicalDistributedOptimizer(BasicDistributedOptimizer):
         # each time bprop is finish
         self.fp16_params, self.fp16_grads, self.nelem = \
             self.flatten_params_(params, self.align)
+
+        # Broadcast parameter of rank 0
+        torch.distributed.broadcast(self.fp16_params, 0, async_op=False)
 
         # Locate rank start, offset with respect to total parameters
         self.rank_nelem = self.nelem // self.devices
