@@ -209,7 +209,7 @@ class BasicDistributedOptimizer(object):
 
         return total_norm
 
-    def step(self, **args):
+    def step(self, update=True, **args):
         raise NotImplementedError
 
 class FullyDistributedOptimizer(BasicDistributedOptimizer):
@@ -259,7 +259,7 @@ class FullyDistributedOptimizer(BasicDistributedOptimizer):
         self.fp16_params_list = self.build_all_gather_weights_(self.fp16_params,
             self.align, self.world_size, self.rank_nelem)
 
-    def step(self, **args):
+    def step(self, update=True, **args):
         # Flatten the model's fp16 gradients
         self.flatten_fp16_grads_(self.fp16_grads, self.params, self.align)
 
@@ -282,7 +282,7 @@ class FullyDistributedOptimizer(BasicDistributedOptimizer):
         args['scale'] /= clip_coef
         args['grads'] = [self.fp16_grads_list[self.rank]]
         args['output_params'] = [self.fp16_params_list[self.rank]]
-        self.optimizer.step(**args)
+        if update:  self.optimizer.step(**args)
 
         # All gather FP16 parameters
         # Since the flattened FP16 parameters and model parameters share the
@@ -361,7 +361,7 @@ class IntraNodeDistributedOptimizer(BasicDistributedOptimizer):
         self.fp16_params_list = self.build_all_gather_weights_(self.fp16_params,
             self.align, self.devices, self.rank_nelem)
 
-    def step(self, **args):
+    def step(self, update=True, **args):
         # Flatten the model's fp16 gradients
         self.flatten_fp16_grads_(self.fp16_grads, self.params, self.align)
 
@@ -396,7 +396,7 @@ class IntraNodeDistributedOptimizer(BasicDistributedOptimizer):
         args['scale'] /= clip_coef
         args['grads'] = [self.fp16_grads_list_device[self.device_rank]]
         args['output_params'] = [self.fp16_params_list[self.device_rank]]
-        self.optimizer.step(**args)
+        if update:  self.optimizer.step(**args)
 
         # All gather FP16 parameters
         # Since the flattened FP16 parameters and model parameters share the
@@ -460,7 +460,7 @@ class IntraNodeAcceleratedOptimizer(BasicDistributedOptimizer):
         self.fp16_params_list = self.build_all_gather_weights_(self.fp16_params,
             self.align, self.devices, self.rank_nelem)
 
-    def step(self, **args):
+    def step(self, update=True, **args):
         # Flatten the model's fp16 gradients
         self.flatten_fp16_grads_(self.fp16_grads, self.params, self.align)
 
@@ -485,7 +485,7 @@ class IntraNodeAcceleratedOptimizer(BasicDistributedOptimizer):
         args['scale'] /= clip_coef
         args['grads'] = [self.fp16_grads_list[self.device_rank]]
         args['output_params'] = [self.fp16_params_list[self.device_rank]]
-        self.optimizer.step(**args)
+        if update:  self.optimizer.step(**args)
 
         # All gather FP16 parameters
         # Since the flattened FP16 parameters and model parameters share the
@@ -547,7 +547,7 @@ class TwoLevelDistributedOptimizer(BasicDistributedOptimizer):
         # Create real optimizer
         self.optimizer = optimizer([self.fp32_params], **args)
 
-    def step(self, **args):
+    def step(self, update=True, **args):
         # Flatten the model's fp16 gradients
         self.flatten_fp16_grads_(self.fp16_grads, self.params, self.align)
 
@@ -596,7 +596,7 @@ class TwoLevelDistributedOptimizer(BasicDistributedOptimizer):
         args['scale'] /= clip_coef
         args['grads'] = [self.fp16_grads]
         args['output_params'] = [self.fp16_params]
-        self.optimizer.step(**args)
+        if update:  self.optimizer.step(**args)
 
         return True
 
@@ -662,7 +662,7 @@ class HierarchicalDistributedOptimizer(BasicDistributedOptimizer):
         self.fp16_params_list = self.build_all_gather_weights_(self.fp16_params,
             self.align, self.devices, self.rank_nelem)
 
-    def step(self, **args):
+    def step(self, update=True, **args):
         # Flatten the model's fp16 gradients
         self.flatten_fp16_grads_(self.fp16_grads, self.params, self.align)
 
@@ -699,7 +699,7 @@ class HierarchicalDistributedOptimizer(BasicDistributedOptimizer):
         args['scale'] /= clip_coef
         args['grads'] = [self.fp16_grads_list[self.device_rank]]
         args['output_params'] = [self.fp16_params_list[self.device_rank]]
-        self.optimizer.step(**args)
+        if update:  self.optimizer.step(**args)
 
         # All gather FP16 parameters
         # Since the flattened FP16 parameters and model parameters share the
