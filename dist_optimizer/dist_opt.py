@@ -73,13 +73,6 @@ class BasicDistributedOptimizer(object):
                 nelem = (p.numel() + align - 1) // align * align
                 pointer += nelem
     
-            # Copy model's parameters to flattened parameters
-            pointer = 0
-            for p in params:
-                flat_param[pointer:pointer+p.numel()].copy_(p.data.view(-1))
-                nelem = (p.numel() + align - 1) // align * align
-                pointer += nelem
-    
             # Reset model's parameters/gradients to flattened parameters/gradients
             pointer = 0
             for p in params:
